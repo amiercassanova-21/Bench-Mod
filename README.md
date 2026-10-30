@@ -59,7 +59,7 @@ Format tiap baris: `OPERATOR|Kota|ID atau SG|ID server Ookla`
 | **PING** | Hijau di bawah 30 ms, kuning di bawah 80 ms, merah di atasnya |
 | `2%` | Packet loss, hanya tampil bila ada |
 
-Bar memakai skala tetap dari kolom **UP**: 100 / 250 / 500 / 1000 / 1500 / 2000 Mbps.
+Bar memakai skala tetap dari kolom **UP**: 100 / 250 / 500 / 1000 / 1500 / 1800 Mbps.
 
 **Ringkasan**
 - **Batas VPS**: muncul bila download hampir semua server mentok di angka yang sama. Artinya angka itu batas port VPS, bukan kecepatan operator.

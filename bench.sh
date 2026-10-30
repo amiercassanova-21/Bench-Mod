@@ -99,14 +99,15 @@ run_one(){ # $1 = id server (kosong = terdekat)
 
 # ---------- tampilan ----------
 mb(){ (( $1 >= 10000 )) && awk -v v="$1" 'BEGIN{printf "%.1fG", v/1000}' || printf '%s' "$1"; }
-# bar mengikuti UP (arah VPS ke pelanggan), skala tetap: 100/250/500/1000/1500/2000 Mbps
+# bar mengikuti UP (arah VPS ke pelanggan), skala tetap: 100/250/500/1000/1500/1800 Mbps
 sbar(){ local n=0 t i out="" cols=(172 178 184 148 112 76)
-  for t in 100 250 500 1000 1500 2000; do (( $1 >= t )) && n=$((n+1)); done; ((n<1))&&n=1
+  for t in 100 250 500 1000 1500 1800; do (( $1 >= t )) && n=$((n+1)); done; ((n<1))&&n=1
   for ((i=0;i<6;i++)); do if ((i<n)); then out+="$(c ${cols[i]})▰"; else out+="$(c 238)▱"; fi; done; printf '%s%s' "$out" "$N"; }
+pv(){ (( $1 < 1 )) && printf '<1' || printf '%s' "$1"; }
 pcol(){ (( $1 < 30 )) && printf '%s' "$G" || { (( $1 < 80 )) && printf '%s' "$Y" || printf '%s' "$R"; }; }
 row(){ # $1 kota  $2 down  $3 up  $4 ping  $5 loss%
   local lo=""; (( ${5:-0} > 0 )) && lo=" ${R}${5}%${N}"
-  printf ' %s%-10s%s %s %s%5s%s %s%5s%s %s%4sms%s%s\n' "$W" "$1" "$N" "$(sbar $3)" "$C" "$(mb $2)" "$N" "$M" "$(mb $3)" "$N" "$(pcol $4)" "$4" "$N" "$lo"; }
+  printf ' %s%-10s%s %s %s%5s%s %s%5s%s %s%4sms%s%s\n' "$W" "$1" "$N" "$(sbar $3)" "$C" "$(mb $2)" "$N" "$M" "$(mb $3)" "$N" "$(pcol $4)" "$(pv $4)" "$N" "$lo"; }
 failrow(){ printf ' %s%-10s%s %s! server tidak aktif · dilewati%s\n' "$W" "$1" "$N" "$Y" "$N"; }
 waitrow(){ printf ' %s%-10s · menunggu%s\n' "$D" "$1" "$N"; }
 
@@ -185,13 +186,14 @@ summary(){
   echo; top
   bl "${B}${W}RINGKASAN${N}"
   if (( n >= 3 && near*10 >= n*7 )); then bl "▲ Batas VPS : ${C}±$(mbg $maxdl)${N} ${D}(semua mentok)${N}"; tg+=("Batas VPS ±$(mbg $maxdl)"); fi
-  (( pn )) && { bl "◉ Ping ID   : $(pcol $((sum/pn)))$((sum/pn)) ms${N} rata-rata"; tg+=("Ping ID $((sum/pn)) ms"); }
+  (( pn )) && { bl "◉ Ping ID   : $(pcol $((sum/pn)))$(pv $((sum/pn))) ms${N} rata-rata"; tg+=("Ping ID $(pv $((sum/pn))) ms"); }
   local maxa=0 a
   for op in TELKOMSEL INDOSAT XL; do [[ -n "${bc[$op]}" ]] || continue; a=$(( su[$op]/sn[$op] )); (( a > maxa )) && maxa=$a; done
+  (( maxa )) && tg+=("Terbaik per operator:")
   for op in TELKOMSEL INDOSAT XL; do
     [[ -n "${bc[$op]}" ]] || continue
-    lines+=("$(printf '  %s%-8s%s %-9s %s↑%5s%s · %s%2s ms%s' "$(c $(opcol $op))" "$(opname $op)" "$N" "${bc[$op]}" "$M" "$(mb ${bu[$op]})" "$N" "$(pcol ${bp[$op]})" "${bp[$op]}" "$N")")
-    tg+=("$(opname $op) ${bc[$op]} ↑$(mb ${bu[$op]}) ${bp[$op]}ms")
+    lines+=("$(printf '  %s%-8s%s %-9s %s↑%5s%s · %s%2s ms%s' "$(c $(opcol $op))" "$(opname $op)" "$N" "${bc[$op]}" "$M" "$(mb ${bu[$op]})" "$N" "$(pcol ${bp[$op]})" "$(pv ${bp[$op]})" "$N")")
+    tg+=("• $(opname $op) ${bc[$op]} ↑$(mb ${bu[$op]}) · $(pv ${bp[$op]}) ms")
     a=$(( su[$op]/sn[$op] )); (( a*10 < maxa*6 )) && weak+=("$(opname $op) ke pelanggan ±$(( (a+5)/10*10 )) Mbps")
   done
   if (( ${#lines[@]} )); then
@@ -201,7 +203,7 @@ summary(){
   # mode satu server (tanpa operator): tampilkan hasilnya saja
   if (( ! ${#lines[@]} && n )); then
     for ((i=0;i<${#SEL[@]};i++)); do [[ "${RES[i]}" == FAIL || -z "${RES[i]}" ]] && continue
-      read -r dl ul pg _ <<<"${RES[i]}"; bl "★ Hasil : ${C}↓$(mb $dl)${N} ${M}↑$(mb $ul)${N} · $(pcol $pg)${pg} ms${N}"; tg+=("↓$(mb $dl) ↑$(mb $ul) ${pg}ms"); done
+      read -r dl ul pg _ <<<"${RES[i]}"; bl "★ Hasil : ${C}↓$(mb $dl)${N} ${M}↑$(mb $ul)${N} · $(pcol $pg)$(pv $pg) ms${N}"; tg+=("↓$(mb $dl) ↑$(mb $ul) $(pv $pg) ms"); done
   fi
   for i in "${weak[@]}"; do bl "${Y}! ${i}${N}"; tg+=("! $i"); done
   (( ${#fails[@]} )) && { bl "${Y}! Gagal ${#fails[@]} server${N} ($(IFS=,; echo "${fails[*]}" | sed 's/,/, /g' | cut -c1-24))"; tg+=("Gagal: ${#fails[@]} server"); }
