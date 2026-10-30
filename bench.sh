@@ -1,369 +1,276 @@
-#!/usr/bin/env bash
-#
-# Description: A Bench Script by Teddysun
-#
-# Copyright (C) 2015 - 2022 Teddysun <i@teddysun.com>
-# Thanks: LookBack <admin@dwhd.org>
-# URL: https://teddysun.com/444.html
-# https://github.com/teddysun/across/blob/master/bench.sh
-#
-trap _exit INT QUIT TERM
+#!/bin/bash
+# =====================================================
+#  BENCH-MOD  ·  mod by Cassanova Tunneling
+#  base: bench.sh by Teddysun (https://github.com/teddysun/across)
+#  Speedtest multi server operator seluler Indonesia + SG, memakai
+#  Speedtest CLI resmi Ookla (versi dikunci + cek SHA-256).
+#  Berdiri sendiri: bisa dipakai di VPS mana pun (tidak butuh SC).
+#    bash <(curl -sSL .../bench.sh)              -> pilih mode
+#    bash <(curl -sSL .../bench.sh) cepat|id|sg|lengkap|disk|<id server>
+# =====================================================
+export LC_ALL=C.UTF-8 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+REPO_RAW=https://raw.githubusercontent.com/amiercassanova-21/Bench-Mod/main
+WORK=${BENCH_DIR:-${HOME:-/root}/.bench-mod}
+BIN=$WORK/speedtest
+OOKLA_VER=1.2.0
+declare -A OOKLA_SHA=( [x86_64]="5690596c54ff9bed63fa3732f818a05dbc2db19ad36ed68f21ca5f64d5cfeeb7" [aarch64]="3953d231da3783e2bf8904b6dd72767c5c6e533e163d3742fd0437affa431bd3" )
+SRV_LOCAL=$WORK/servers.txt
+HIST=$WORK/history
+mkdir -p "$WORK" 2>/dev/null
+# masukan keyboard: dijalankan lewat "curl | bash" stdin berisi skrip, jadi baca dari /dev/tty
+if [[ -t 0 ]]; then TTY=/dev/stdin; elif (: </dev/tty) 2>/dev/null; then TTY=/dev/tty; else TTY=""; fi
+ask(){ local _a=""; [[ -n "$TTY" ]] && read -rp "$1" _a <"$TTY"; printf '%s' "$_a"; }
 
-_red() {
-    printf '\033[0;31;31m%b\033[0m' "$1"
+# ---------- warna (256 warna: aman di aplikasi terminal HP) ----------
+E=$'\e'; N="${E}[0m"; B="${E}[1m"
+c(){ printf '%s[38;5;%sm' "$E" "$1"; }
+D=$(c 245); FR=$(c 61); W=$(c 255); G=$(c 114); Y=$(c 221); R=$(c 203); C=$(c 81); M=$(c 141)
+GRAD=(93 99 105 111 117 123 159 123 117 111 105 99)
+grad(){ local s="$1" i out=""; for ((i=0;i<${#s};i++)); do out+="$(c ${GRAD[i%${#GRAD[@]}]})${s:i:1}"; done; printf '%s%s%s' "$B" "$out" "$N"; }
+HL="──────────────────────────────────────────"
+top(){ printf '%s╭%s╮%s\n' "$FR" "$HL" "$N"; }
+bot(){ printf '%s╰%s╯%s\n' "$FR" "$HL" "$N"; }
+bl(){ printf '%s│%s %b\n' "$FR" "$N" "$1"; }
+BLN=(Jan Feb Mar Apr Mei Jun Jul Agu Sep Okt Nov Des)
+tgl(){ printf '%s %s %s' "$(date +%d)" "${BLN[$((10#$(date +%m)-1))]}" "$(date '+%Y %H:%M %Z')"; }
+opname(){ case "$1" in TELKOMSEL) echo Tsel;; INDOSAT) echo Indosat;; XL) echo XL;; *) echo "";; esac; }
+opcol(){ case "$1" in TELKOMSEL) echo 196;; INDOSAT) echo 220;; XL) echo 33;; *) echo 245;; esac; }
+
+# ---------- daftar server: operator|kota|ID/SG|id ----------
+# Daftar terbaru diambil dari repo (bisa diganti tanpa rilis versi baru);
+# kalau gagal, pakai salinan terakhir / bawaan di bawah ini.
+DEFAULT_SERVERS='TELKOMSEL|Jakarta|ID|71028
+TELKOMSEL|Surabaya|ID|70730
+TELKOMSEL|Medan|ID|70718
+TELKOMSEL|Batam|ID|43255
+TELKOMSEL|Telin SG|SG|37744
+INDOSAT|Jakarta|ID|13039
+INDOSAT|Surabaya|ID|36700
+INDOSAT|Medan|ID|39334
+INDOSAT|Batam|ID|18108
+INDOSAT|SG|SG|13058
+XL|Jakarta|ID|68900
+XL|Surabaya|ID|61853
+XL|Medan|ID|67458
+XL|SG|SG|42688'
+load_servers(){
+  local t
+  if [[ "${BENCH_NO_FETCH:-0}" != 1 ]]; then
+    t=$(mktemp)
+    if curl -fsS --max-time 8 "$REPO_RAW/speedtest-servers.txt" -o "$t" 2>/dev/null && grep -qE '^[A-Z]+\|[^|]+\|(ID|SG)\|[0-9]+$' "$t"; then
+      grep -E '^[A-Z]+\|[^|]+\|(ID|SG)\|[0-9]+$' "$t" > "$SRV_LOCAL"
+    fi
+    rm -f "$t"
+  fi
+  if [[ -s "$SRV_LOCAL" ]]; then cat "$SRV_LOCAL"; else printf '%s\n' "$DEFAULT_SERVERS"; fi
 }
 
-_green() {
-    printf '\033[0;31;32m%b\033[0m' "$1"
+# ---------- pasang Speedtest CLI resmi Ookla (versi dikunci + SHA-256) ----------
+ensure_cli(){
+  [[ -x "$BIN" ]] && return 0
+  local a sha url t
+  a=$(uname -m); [[ "$a" == arm64 ]] && a=aarch64
+  sha=${OOKLA_SHA[$a]}
+  [[ -n "$sha" && "$sha" != __* ]] || { echo -e " ${R}Arsitektur $a belum didukung speedtest.${N}"; return 1; }
+  url="https://install.speedtest.net/app/cli/ookla-speedtest-$OOKLA_VER-linux-$a.tgz"
+  echo -e " ${D}Memasang Speedtest CLI $OOKLA_VER (sekali saja)...${N}"
+  t=$(mktemp -d)
+  if curl -fsSL --max-time 60 "$url" -o "$t/s.tgz" && [[ "$(sha256sum "$t/s.tgz" | cut -d' ' -f1)" == "$sha" ]] \
+     && tar -xzf "$t/s.tgz" -C "$t" speedtest; then
+    install -m 755 "$t/speedtest" "$BIN"
+  else
+    echo -e " ${R}Gagal mengunduh/memverifikasi Speedtest CLI. Coba lagi nanti.${N}"
+  fi
+  rm -rf "$t"; [[ -x "$BIN" ]]
 }
 
-_yellow() {
-    printf '\033[0;31;33m%b\033[0m' "$1"
+# ---------- satu tes -> "dl ul ping jitter loss url" (Mbps, ms) atau kosong ----------
+run_one(){ # $1 = id server (kosong = terdekat)
+  local j args=(--accept-license --accept-gdpr -f json)
+  [[ -n "$1" ]] && args+=(-s "$1")
+  local dl ul pg jt ls url
+  j=$(timeout 120 "$BIN" "${args[@]}" </dev/null 2>/dev/null | grep '"type":"result"') || return 1
+  # dibaca tanpa jq supaya bisa jalan di VPS mana pun
+  dl=$(grep -oP '"download":\{[^}]*"bandwidth":\K[0-9]+' <<<"$j"); ul=$(grep -oP '"upload":\{[^}]*"bandwidth":\K[0-9]+' <<<"$j")
+  pg=$(grep -oP '"ping":\{[^}]*"latency":\K[0-9]+' <<<"$j"); jt=$(grep -oP '"ping":\{[^}]*"jitter":\K[0-9]+' <<<"$j")
+  ls=$(grep -oP '"packetLoss":\K[0-9]+' <<<"$j"); url=$(grep -oP '"result":\{[^}]*"url":"\K[^"]+' <<<"$j")
+  [[ -n "$dl" && -n "$ul" ]] || return 1
+  echo "$(( dl*8/1000000 )) $(( ul*8/1000000 )) ${pg:-0} ${jt:-0} ${ls:-0} ${url:--}"
 }
 
-_blue() {
-    printf '\033[0;31;36m%b\033[0m' "$1"
+# ---------- tampilan ----------
+mb(){ (( $1 >= 10000 )) && awk -v v="$1" 'BEGIN{printf "%.1fG", v/1000}' || printf '%s' "$1"; }
+sbar(){ local n i out="" cols=(172 178 184 148 112 76); n=$(( ($1*6+MAXDL-1)/MAXDL )); ((n<1))&&n=1; ((n>6))&&n=6
+  for ((i=0;i<6;i++)); do if ((i<n)); then out+="$(c ${cols[i]})▰"; else out+="$(c 238)▱"; fi; done; printf '%s%s' "$out" "$N"; }
+pcol(){ (( $1 < 30 )) && printf '%s' "$G" || { (( $1 < 80 )) && printf '%s' "$Y" || printf '%s' "$R"; }; }
+row(){ printf ' %s%-10s%s %s %s%5s%s %s%5s%s %s%4sms%s\n' "$W" "$1" "$N" "$(sbar $2)" "$C" "$(mb $2)" "$N" "$M" "$(mb $3)" "$N" "$(pcol $4)" "$4" "$N"; }
+failrow(){ printf ' %s%-10s%s %s! server tidak aktif · dilewati%s\n' "$W" "$1" "$N" "$Y" "$N"; }
+waitrow(){ printf ' %s%-10s · menunggu%s\n' "$D" "$1" "$N"; }
+
+header(){
+  clear 2>/dev/null; echo
+  printf ' %s\n' "$(grad '▌ C A S S A N O V A  S P E E D T E S T ▐')"
+  printf ' %smod by%s %sCassanova Tunneling%s\n' "$D" "$N" "$M$B" "$N"
+  printf ' %sbase   bench.sh by Teddysun%s\n' "$D" "$N"
+}
+# info lokasi VPS (sekali per jalan): ipwho.is, cadangan ip-api.com
+get_ipinfo(){
+  local j
+  j=$(curl -fsS --max-time 6 https://ipwho.is/ 2>/dev/null)
+  if [[ "$j" == *'"success":true'* ]]; then
+    V_CITY=$(grep -oP '"city":"\K[^"]*' <<<"$j"); V_CC=$(grep -oP '"country_code":"\K[^"]*' <<<"$j")
+    V_ISP=$(grep -oP '"connection":\{[^}]*"isp":"\K[^"]*' <<<"$j")
+  else
+    j=$(curl -fsS --max-time 6 "http://ip-api.com/json/?fields=city,countryCode,isp" 2>/dev/null)
+    V_CITY=$(grep -oP '"city":"\K[^"]*' <<<"$j"); V_CC=$(grep -oP '"countryCode":"\K[^"]*' <<<"$j")
+    V_ISP=$(grep -oP '"isp":"\K[^"]*' <<<"$j")
+  fi
+  V_CITY=${V_CITY:--}; V_CC=${V_CC:-ID}; V_ISP=${V_ISP:--}
+}
+vps_box(){
+  local isp core ram disk os
+  isp=$V_ISP; (( ${#isp} > 22 )) && isp="${isp:0:21}…"
+  core=$(nproc 2>/dev/null); ram=$(free -m | awk '/Mem:/{printf "%.1f", $2/1024}')
+  disk=$(df -BG / 2>/dev/null | awk 'NR==2{gsub("G","",$2); print $2}')
+  os=$(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-Linux}" | sed 's/ GNU\/Linux//; s/ LTS//'); (( ${#os} > 30 )) && os="${os:0:29}…"
+  top
+  bl "${C}VPS ${N} ${V_CITY} · ${isp} ${D}(${V_CC})${N}"
+  bl "${C}SPEK${N} ${core} core · RAM ${ram} GB · Disk ${disk} GB"
+  bl "${C}OS  ${N} ${os} · $(uname -m)"
+  bl "${C}MODE${N} ${Y}${MODE_LBL}${N} · ${#SEL[@]} server · ±$(( (${#SEL[@]}*25+59)/60 )) menit"
+  bot
+}
+render(){ # $1 = baris progres (kosong = selesai)
+  local i op prev="" r
+  header; vps_box
+  printf ' %s%-10s %-6s %5s %5s %6s%s\n' "$D" "SERVER" "" "DOWN" "UP" "PING" "$N"
+  printf ' %s%-10s %-6s %5s %5s %6s%s\n' "$D" "" "" "Mbps" "Mbps" "" "$N"
+  for ((i=0;i<${#SEL[@]};i++)); do
+    IFS='|' read -r op city _ _ <<<"${SEL[i]}"
+    if [[ "$op" != "$prev" ]]; then
+      local cnt=0; for r in "${SEL[@]}"; do [[ "${r%%|*}" == "$op" ]] && cnt=$((cnt+1)); done
+      local nm=$op; [[ $op == XL ]] && nm="XL AXIATA"; [[ $op == NEAR ]] && nm="TERDEKAT"
+      printf '\n %s●%s %s%s%s %s· %s server%s\n' "$(c $(opcol $op))" "$N" "$B$W" "$nm" "$N" "$D" "$cnt" "$N"; prev=$op
+    fi
+    if [[ -z "${RES[i]}" ]]; then waitrow "$city"
+    elif [[ "${RES[i]}" == FAIL ]]; then failrow "$city"
+    else read -r dl ul pg _ <<<"${RES[i]}"; row "$city" "$dl" "$ul" "$pg"; fi
+  done
+  [[ -n "$1" ]] && printf '\n %s%s%s\n' "$Y" "$1" "$N"
 }
 
-_exists() {
-    local cmd="$1"
-    if eval type type > /dev/null 2>&1; then
-        eval type "$cmd" > /dev/null 2>&1
-    elif command > /dev/null 2>&1; then
-        command -v "$cmd" > /dev/null 2>&1
-    else
-        which "$cmd" > /dev/null 2>&1
-    fi
-    local rt=$?
-    return ${rt}
+summary(){
+  local i best="" bestv=0 sum=0 n=0 fails=() op city dl ul pg jt ls game=1 stream=1 call=1
+  for ((i=0;i<${#SEL[@]};i++)); do
+    IFS='|' read -r op city cc _ <<<"${SEL[i]}"
+    op=$(opname "$op"); local who="${op:+$op }$city"
+    if [[ "${RES[i]}" == FAIL || -z "${RES[i]}" ]]; then fails+=("$who"); continue; fi
+    read -r dl ul pg jt ls _ <<<"${RES[i]}"
+    (( dl > bestv )) && { bestv=$dl; best="$who"; }
+    if [[ "$cc" == ID ]]; then sum=$((sum+pg)); n=$((n+1)); (( dl < 50 )) && stream=0; fi
+    (( ls > 1 )) && { game=0; call=0; }; (( jt > 30 )) && call=0
+  done
+  local avg="-"; (( n > 0 )) && { avg=$((sum/n)); (( avg >= 60 )) && game=0; }
+  echo; top
+  bl "${B}${W}RINGKASAN${N}"
+  [[ -n "$best" ]] && bl "★ Tercepat : ${G}${best}${N} · $(mb $bestv) Mbps"
+  [[ "$avg" != - ]] && bl "◉ Ping ID  : $(pcol $avg)${avg} ms${N} rata-rata"
+  local fit=(); (( game )) && fit+=("Game"); (( stream )) && fit+=("Stream"); (( call )) && fit+=("Call")
+  (( ${#fit[@]} )) && bl "✓ Cocok    : ${G}$(IFS='·'; echo "${fit[*]}" | sed 's/·/ · /g')${N}"
+  (( ${#fails[@]} )) && bl "! Gagal    : ${Y}${#fails[@]} server${N} ($(IFS=,; echo "${fails[*]}" | sed 's/,/, /g' | cut -c1-24))"
+  bot
+  SUM_TXT="Tercepat: ${best:--} ($(mb $bestv) Mbps) | Ping ID: ${avg} ms | Gagal: ${#fails[@]}"
 }
 
-_exit() {
-    _red "\nThe script has been terminated.\n"
-    # clean up
-    rm -fr speedtest.tgz speedtest-cli benchtest_*
-    exit 1
+disk_test(){
+  local free sp
+  free=$(df -m "$WORK" | awk 'NR==2{print $4}')
+  header; echo
+  echo -e " ${Y}Uji disk menulis 512 MB ke disk dan membuat disk sibuk sesaat.${N}"
+  echo -e " ${Y}Di VPS ramai, koneksi pelanggan bisa tersendat selama uji.${N}"
+  (( free > 1024 )) || { echo -e " ${R}Ruang disk kurang dari 1 GB, uji dibatalkan.${N}"; return; }
+  yn=$(ask "$(echo -e " Lanjutkan? (y/n) : ")"); [[ "$yn" == y || "$yn" == Y ]] || return
+  sp=$( (LANG=C dd if=/dev/zero of="$WORK/disktest" bs=1M count=512 conv=fdatasync 2>&1; rm -f "$WORK/disktest") | awk -F, 'END{gsub(/^ +/,"",$NF); print $NF}')
+  echo; top; bl "${B}${W}UJI DISK${N}"; bl "Tulis 512 MB : ${G}${sp:-gagal}${N}"; bot
 }
 
-get_opsy() {
-    [ -f /etc/redhat-release ] && awk '{print $0}' /etc/redhat-release && return
-    [ -f /etc/os-release ] && awk -F'[= "]' '/PRETTY_NAME/{print $3,$4,$5}' /etc/os-release && return
-    [ -f /etc/lsb-release ] && awk -F'[="]+' '/DESCRIPTION/{print $2}' /etc/lsb-release && return
+choose_mode(){
+  header; echo
+  echo -e " ${C}1.)${N} Cepat      ${D}terdekat + 3 operator · ±2 mnt${N}"
+  echo -e " ${C}2.)${N} Indonesia  ${D}semua kota operator ID${N}"
+  echo -e " ${C}3.)${N} Singapura  ${D}server SG tiap operator${N}"
+  echo -e " ${C}4.)${N} Lengkap    ${D}semua server · ±6 mnt${N}"
+  echo -e " ${C}5.)${N} Pilih ID   ${D}satu server Speedtest${N}"
+  echo -e " ${C}6.)${N} Uji disk   ${D}opsional · membuat disk sibuk${N}"
+  echo -e " ${C}x.)${N} Keluar\n"
+  [[ -z "$TTY" ]] && { MODE=cepat; return; }     # tanpa keyboard -> mode cepat
+  o=$(ask "$(echo -e " ${G}Pilih : ${N}")")
+  case "$o" in 1) MODE=cepat;; 2) MODE=id;; 3) MODE=sg;; 4) MODE=lengkap;;
+    5) MODE=$(ask " ID server : "); [[ "$MODE" =~ ^[0-9]+$ ]] || exit 0;; 6) MODE=disk;; *) exit 0;; esac
 }
 
-next() {
-    printf "%-70s\n" "-" | sed 's/\s/-/g'
-}
+# ---------- utama ----------
+main(){
+MODE=${1:-}
+[[ -z "$MODE" ]] && choose_mode
+[[ "$MODE" == disk ]] && { disk_test; exit 0; }
+command -v curl >/dev/null || { echo "curl belum terpasang"; exit 1; }
+ensure_cli || exit 1
+get_ipinfo; VPSCC=$V_CC
+mapfile -t ALL < <(load_servers)
+SEL=()
+case "$MODE" in
+  cepat)   MODE_LBL=Cepat; SEL+=("NEAR|Terdekat|$VPSCC|")
+           # VPS di SG: server SG tiap operator; selain itu: Jakarta tiap operator
+           for op in TELKOMSEL INDOSAT XL; do
+             for s in "${ALL[@]}"; do IFS='|' read -r o city cc _ <<<"$s"; [[ $o != "$op" ]] && continue
+               if [[ "$VPSCC" == SG ]]; then [[ $cc == SG ]] && { SEL+=("$s"); break; }
+               else [[ $city == Jakarta ]] && { SEL+=("$s"); break; }; fi
+             done
+           done ;;
+  id)      MODE_LBL=Indonesia; for s in "${ALL[@]}"; do [[ "$s" == *"|ID|"* ]] && SEL+=("$s"); done ;;
+  sg)      MODE_LBL=Singapura; for s in "${ALL[@]}"; do [[ "$s" == *"|SG|"* ]] && SEL+=("$s"); done ;;
+  lengkap) MODE_LBL=Lengkap
+           # urutan per operator: region VPS lebih dulu
+           for op in TELKOMSEL INDOSAT XL; do
+             for pass in first second; do for s in "${ALL[@]}"; do IFS='|' read -r o _ cc _ <<<"$s"; [[ $o != "$op" ]] && continue
+               if [[ $pass == first ]]; then [[ $cc == "$VPSCC" ]] && SEL+=("$s"); else [[ $cc != "$VPSCC" ]] && SEL+=("$s"); fi
+             done; done
+           done ;;
+  [0-9]*)  MODE_LBL="Server $MODE"; SEL+=("NEAR|ID $MODE|ID|$MODE") ;;
+  *) echo "Pakai: bench.sh [cepat|id|sg|lengkap|disk|<id server>]"; exit 1 ;;
+esac
+(( ${#SEL[@]} )) || { echo "Tidak ada server untuk mode ini."; exit 1; }
 
-speed_test() {
-    local nodeName="$2"
-    [ -z "$1" ] && ./speedtest-cli/speedtest --progress=no --accept-license --accept-gdpr > ./speedtest-cli/speedtest.log 2>&1 || \
-    ./speedtest-cli/speedtest --progress=no --server-id=$1 --accept-license --accept-gdpr > ./speedtest-cli/speedtest.log 2>&1
-    if [ $? -eq 0 ]; then
-        local dl_speed=$(awk '/Download/{print $3" "$4}' ./speedtest-cli/speedtest.log)
-        local up_speed=$(awk '/Upload/{print $3" "$4}' ./speedtest-cli/speedtest.log)
-        local latency=$(awk '/Latency/{print $2" "$3}' ./speedtest-cli/speedtest.log)
-        if [[ -n "${dl_speed}" && -n "${up_speed}" && -n "${latency}" ]]; then
-            printf "\033[0;33m%-18s\033[0;32m%-18s\033[0;32m%-18s\033[0;36m%-12s\033[0m\n" " ${nodeName}" "${up_speed}" "${dl_speed}" "${latency}"
-        fi
-    fi
-}
+if [[ -n "$TTY" && "${BENCH_YES:-0}" != 1 ]]; then
+  header; vps_box
+  echo -e "\n ${Y}Selama tes, bandwidth VPS terpakai penuh sehingga koneksi${N}"
+  echo -e " ${Y}pengguna lain bisa melambat sebentar.${N}"
+  go=$(ask "$(echo -e " ${G}Enter = mulai · x = batal : ${N}")"); [[ "$go" == x || "$go" == X ]] && exit 0
+fi
 
-speed() {
-    speed_test '' 'Speedtest.net'
-    speed_test '7582' 'Tsel-Jkt, ID'
-    speed_test '1371' 'Tsel-Btm, ID'
-    speed_test '2233' 'Tsel-Sby, ID'
-    speed_test '37744' 'Tsel-Telin, SG'
-    speed_test '13039' 'Indosat-Jkt, ID'
-    speed_test '39334' 'Indosat-Mdn, ID'
-    speed_test '36700' 'Indosat-Sby, ID'
-    speed_test '5168' 'Indosat, SG'
-    speed_test '41805' 'XL, ID'
-    speed_test '41806' 'XL, SG'
-    speed_test '7311' 'M1 Limited, SG'
-    speed_test '28922' 'Amsterdam, NL'
-    speed_test '21569' 'Tokyo, JP'
+declare -a RES=(); MAXDL=1; START=$(date +%s)
+SPIN=(◐ ◓ ◑ ◒)
+for ((i=0;i<${#SEL[@]};i++)); do
+  IFS='|' read -r op city cc id <<<"${SEL[i]}"
+  _o=$(opname "$op"); render "${SPIN[i%4]} [$((i+1))/${#SEL[@]}] ${_o:+$_o }${city} · mengukur..."
+  if out=$(run_one "$id"); then
+    read -r dl ul pg jt ls url _ <<<"$out"
+    RES[i]="$dl $ul $pg $jt $ls $url"; (( dl > MAXDL )) && MAXDL=$dl
+  else RES[i]=FAIL; fi
+done
+render ""
+summary
+EL=$(( $(date +%s) - START ))
+printf ' %s◷ %dm %02dd · %s%s\n' "$D" $((EL/60)) $((EL%60)) "$(tgl)" "$N"
+# riwayat 10 tes terakhir
+{ tail -n 9 "$HIST" 2>/dev/null; echo "$(date '+%F %H:%M')|$MODE_LBL|$SUM_TXT"; } > "$HIST.t" 2>/dev/null && mv -f "$HIST.t" "$HIST"
+echo
 }
-
-io_test() {
-    (LANG=C dd if=/dev/zero of=benchtest_$$ bs=512k count=$1 conv=fdatasync && rm -f benchtest_$$ ) 2>&1 | awk -F, '{io=$NF} END { print io}' | sed 's/^[ \t]*//;s/[ \t]*$//'
-}
-
-calc_size() {
-    local raw=$1
-    local total_size=0
-    local num=1
-    local unit="KB"
-    if ! [[ ${raw} =~ ^[0-9]+$ ]] ; then
-        echo ""
-        return
-    fi
-    if [ "${raw}" -ge 1073741824 ]; then
-        num=1073741824
-        unit="TB"
-    elif [ "${raw}" -ge 1048576 ]; then
-        num=1048576
-        unit="GB"
-    elif [ "${raw}" -ge 1024 ]; then
-        num=1024
-        unit="MB"
-    elif [ "${raw}" -eq 0 ]; then
-        echo "${total_size}"
-        return
-    fi
-    total_size=$( awk 'BEGIN{printf "%.1f", '$raw' / '$num'}' )
-    echo "${total_size} ${unit}"
-}
-
-check_virt(){
-    _exists "dmesg" && virtualx="$(dmesg 2>/dev/null)"
-    if _exists "dmidecode"; then
-        sys_manu="$(dmidecode -s system-manufacturer 2>/dev/null)"
-        sys_product="$(dmidecode -s system-product-name 2>/dev/null)"
-        sys_ver="$(dmidecode -s system-version 2>/dev/null)"
-    else
-        sys_manu=""
-        sys_product=""
-        sys_ver=""
-    fi
-    if   grep -qa docker /proc/1/cgroup; then
-        virt="Docker"
-    elif grep -qa lxc /proc/1/cgroup; then
-        virt="LXC"
-    elif grep -qa container=lxc /proc/1/environ; then
-        virt="LXC"
-    elif [[ -f /proc/user_beancounters ]]; then
-        virt="OpenVZ"
-    elif [[ "${virtualx}" == *kvm-clock* ]]; then
-        virt="KVM"
-    elif [[ "${sys_product}" == *KVM* ]]; then
-        virt="KVM"
-    elif [[ "${cname}" == *KVM* ]]; then
-        virt="KVM"
-    elif [[ "${cname}" == *QEMU* ]]; then
-        virt="KVM"
-    elif [[ "${virtualx}" == *"VMware Virtual Platform"* ]]; then
-        virt="VMware"
-    elif [[ "${sys_product}" == *"VMware Virtual Platform"* ]]; then
-        virt="VMware"
-    elif [[ "${virtualx}" == *"Parallels Software International"* ]]; then
-        virt="Parallels"
-    elif [[ "${virtualx}" == *VirtualBox* ]]; then
-        virt="VirtualBox"
-    elif [[ -e /proc/xen ]]; then
-        if grep -q "control_d" "/proc/xen/capabilities" 2>/dev/null; then
-            virt="Xen-Dom0"
-        else
-            virt="Xen-DomU"
-        fi
-    elif [ -f "/sys/hypervisor/type" ] && grep -q "xen" "/sys/hypervisor/type"; then
-        virt="Xen"
-    elif [[ "${sys_manu}" == *"Microsoft Corporation"* ]]; then
-        if [[ "${sys_product}" == *"Virtual Machine"* ]]; then
-            if [[ "${sys_ver}" == *"7.0"* || "${sys_ver}" == *"Hyper-V" ]]; then
-                virt="Hyper-V"
-            else
-                virt="Microsoft Virtual Machine"
-            fi
-        fi
-    else
-        virt="Dedicated"
-    fi
-}
-
-ipv4_info() {
-    local org="$(wget -q -T10 -O- ipinfo.io/org)"
-    local city="$(wget -q -T10 -O- ipinfo.io/city)"
-    local country="$(wget -q -T10 -O- ipinfo.io/country)"
-    local region="$(wget -q -T10 -O- ipinfo.io/region)"
-    if [[ -n "$org" ]]; then
-        echo " Organization       : $(_blue "$org")"
-    fi
-    if [[ -n "$city" && -n "country" ]]; then
-        echo " Location           : $(_blue "$city / $country")"
-    fi
-    if [[ -n "$region" ]]; then
-        echo " Region             : $(_yellow "$region")"
-    fi
-    if [[ -z "$org" ]]; then
-        echo " Region             : $(_red "No ISP detected")"
-    fi
-}
-
-install_speedtest() {
-    if [ ! -e "./speedtest-cli/speedtest" ]; then
-        sys_bit=""
-        local sysarch="$(uname -m)"
-        if [ "${sysarch}" = "unknown" ] || [ "${sysarch}" = "" ]; then
-            local sysarch="$(arch)"
-        fi
-        if [ "${sysarch}" = "x86_64" ]; then
-            sys_bit="x86_64"
-        fi
-        if [ "${sysarch}" = "i386" ] || [ "${sysarch}" = "i686" ]; then
-            sys_bit="i386"
-        fi
-        if [ "${sysarch}" = "armv8" ] || [ "${sysarch}" = "armv8l" ] || [ "${sysarch}" = "aarch64" ] || [ "${sysarch}" = "arm64" ]; then
-            sys_bit="aarch64"
-        fi
-        if [ "${sysarch}" = "armv7" ] || [ "${sysarch}" = "armv7l" ]; then
-            sys_bit="armhf"
-        fi
-        if [ "${sysarch}" = "armv6" ]; then
-            sys_bit="armel"
-        fi
-        [ -z "${sys_bit}" ] && _red "Error: Unsupported system architecture (${sysarch}).\n" && exit 1
-        url1="https://install.speedtest.net/app/cli/ookla-speedtest-1.1.1-linux-${sys_bit}.tgz"
-        url2="https://dl.lamp.sh/files/ookla-speedtest-1.1.1-linux-${sys_bit}.tgz"
-        wget --no-check-certificate -q -T10 -O speedtest.tgz ${url1}
-        if [ $? -ne 0 ]; then
-            wget --no-check-certificate -q -T10 -O speedtest.tgz ${url2}
-            [ $? -ne 0 ] && _red "Error: Failed to download speedtest-cli.\n" && exit 1
-        fi
-        mkdir -p speedtest-cli && tar zxf speedtest.tgz -C ./speedtest-cli && chmod +x ./speedtest-cli/speedtest
-        rm -f speedtest.tgz
-    fi
-    printf "%-18s%-18s%-20s%-12s\n" " Node Name"   "Upload Speed"   "Download Speed"   "Latency"
-}
-
-print_intro() {
-    echo "-------------------- A Bench.sh Script By Teddysun -------------------"
-    echo "--------------------------MOD BY @user_legend-------------------------"
-    echo "----------------------------------------------------------------------"
-    echo " Version            : $(_green 6.9)"
-}
-
-# Get System information
-get_system_info() {
-    cname=$( awk -F: '/model name/ {name=$2} END {print name}' /proc/cpuinfo | sed 's/^[ \t]*//;s/[ \t]*$//' )
-    cores=$( awk -F: '/processor/ {core++} END {print core}' /proc/cpuinfo )
-    freq=$( awk -F'[ :]' '/cpu MHz/ {print $4;exit}' /proc/cpuinfo )
-    ccache=$( awk -F: '/cache size/ {cache=$2} END {print cache}' /proc/cpuinfo | sed 's/^[ \t]*//;s/[ \t]*$//' )
-    cpu_aes=$( grep -i 'aes' /proc/cpuinfo )
-    cpu_virt=$( grep -Ei 'vmx|svm' /proc/cpuinfo )
-    tram=$( LANG=C; free | awk '/Mem/ {print $2}' )
-    tram=$( calc_size $tram )
-    uram=$( LANG=C; free | awk '/Mem/ {print $3}' )
-    uram=$( calc_size $uram )
-    swap=$( LANG=C; free | awk '/Swap/ {print $2}' )
-    swap=$( calc_size $swap )
-    uswap=$( LANG=C; free | awk '/Swap/ {print $3}' )
-    uswap=$( calc_size $uswap )
-    up=$( awk '{a=$1/86400;b=($1%86400)/3600;c=($1%3600)/60} {printf("%d days, %d hour %d min\n",a,b,c)}' /proc/uptime )
-    if _exists "w"; then
-        load=$( LANG=C; w | head -1 | awk -F'load average:' '{print $2}' | sed 's/^[ \t]*//;s/[ \t]*$//' )
-    elif _exists "uptime"; then
-        load=$( LANG=C; uptime | head -1 | awk -F'load average:' '{print $2}' | sed 's/^[ \t]*//;s/[ \t]*$//' )
-    fi
-    opsy=$( get_opsy )
-    arch=$( uname -m )
-    if _exists "getconf"; then
-        lbit=$( getconf LONG_BIT )
-    else
-        echo ${arch} | grep -q "64" && lbit="64" || lbit="32"
-    fi
-    kern=$( uname -r )
-    disk_total_size=$( LANG=C; df -t simfs -t ext2 -t ext3 -t ext4 -t btrfs -t xfs -t vfat -t ntfs -t swap --total 2>/dev/null | grep total | awk '{ print $2 }' )
-    disk_total_size=$( calc_size $disk_total_size )
-    disk_used_size=$( LANG=C; df -t simfs -t ext2 -t ext3 -t ext4 -t btrfs -t xfs -t vfat -t ntfs -t swap --total 2>/dev/null | grep total | awk '{ print $3 }' )
-    disk_used_size=$( calc_size $disk_used_size )
-    tcpctrl=$( sysctl net.ipv4.tcp_congestion_control | awk -F ' ' '{print $3}' )
-}
-# Print System information
-print_system_info() {
-    if [ -n "$cname" ]; then
-        echo " CPU Model          : $(_blue "$cname")"
-    else
-        echo " CPU Model          : $(_blue "CPU model not detected")"
-    fi
-    if [ -n "$freq" ]; then
-        echo " CPU Cores          : $(_blue "$cores @ $freq MHz")"
-    else
-        echo " CPU Cores          : $(_blue "$cores")"
-    fi
-    if [ -n "$ccache" ]; then
-        echo " CPU Cache          : $(_blue "$ccache")"
-    fi
-    if [ -n "$cpu_aes" ]; then
-        echo " AES-NI             : $(_green "Enabled")"
-    else
-        echo " AES-NI             : $(_red "Disabled")"
-    fi
-    if [ -n "$cpu_virt" ]; then
-        echo " VM-x/AMD-V         : $(_green "Enabled")"
-    else
-        echo " VM-x/AMD-V         : $(_red "Disabled")"
-    fi
-    echo " Total Disk         : $(_yellow "$disk_total_size") $(_blue "($disk_used_size Used)")"
-    echo " Total Mem          : $(_yellow "$tram") $(_blue "($uram Used)")"
-    if [ "$swap" != "0" ]; then
-        echo " Total Swap         : $(_blue "$swap ($uswap Used)")"
-    fi
-    echo " System uptime      : $(_blue "$up")"
-    echo " Load average       : $(_blue "$load")"
-    echo " OS                 : $(_blue "$opsy")"
-    echo " Arch               : $(_blue "$arch ($lbit Bit)")"
-    echo " Kernel             : $(_blue "$kern")"
-    echo " TCP CC             : $(_yellow "$tcpctrl")"
-    echo " Virtualization     : $(_blue "$virt")"
-}
-
-print_io_test() {
-    freespace=$( df -m . | awk 'NR==2 {print $4}' )
-    if [ -z "${freespace}" ]; then
-        freespace=$( df -m . | awk 'NR==3 {print $3}' )
-    fi
-    if [ ${freespace} -gt 1024 ]; then
-        writemb=2048
-        io1=$( io_test ${writemb} )
-        echo " I/O Speed(1st run) : $(_yellow "$io1")"
-        io2=$( io_test ${writemb} )
-        echo " I/O Speed(2nd run) : $(_yellow "$io2")"
-        io3=$( io_test ${writemb} )
-        echo " I/O Speed(3rd run) : $(_yellow "$io3")"
-        ioraw1=$( echo $io1 | awk 'NR==1 {print $1}' )
-        [ "`echo $io1 | awk 'NR==1 {print $2}'`" == "GB/s" ] && ioraw1=$( awk 'BEGIN{print '$ioraw1' * 1024}' )
-        ioraw2=$( echo $io2 | awk 'NR==1 {print $1}' )
-        [ "`echo $io2 | awk 'NR==1 {print $2}'`" == "GB/s" ] && ioraw2=$( awk 'BEGIN{print '$ioraw2' * 1024}' )
-        ioraw3=$( echo $io3 | awk 'NR==1 {print $1}' )
-        [ "`echo $io3 | awk 'NR==1 {print $2}'`" == "GB/s" ] && ioraw3=$( awk 'BEGIN{print '$ioraw3' * 1024}' )
-        ioall=$( awk 'BEGIN{print '$ioraw1' + '$ioraw2' + '$ioraw3'}' )
-        ioavg=$( awk 'BEGIN{printf "%.1f", '$ioall' / 3}' )
-        echo " I/O Speed(average) : $(_yellow "$ioavg MB/s")"
-    else
-        echo " $(_red "Not enough space for I/O Speed test!")"
-    fi
-}
-
-print_end_time() {
-    end_time=$(date +%s)
-    time=$(( ${end_time} - ${start_time} ))
-    if [ ${time} -gt 60 ]; then
-        min=$(expr $time / 60)
-        sec=$(expr $time % 60)
-        echo " Finished in        : ${min} min ${sec} sec"
-    else
-        echo " Finished in        : ${time} sec"
-    fi
-    date_time=$(date '+%Y-%m-%d %H:%M:%S %Z')
-    echo " Timestamp          : $date_time"
-}
-
-! _exists "wget" && _red "Error: wget command not found.\n" && exit 1
-! _exists "free" && _red "Error: free command not found.\n" && exit 1
-start_time=$(date +%s)
-get_system_info
-check_virt
-clear
-print_intro
-next
-print_system_info
-ipv4_info
-next
-print_io_test
-next
-install_speedtest && speed && rm -fr speedtest-cli
-next
-print_end_time
-next
+while :; do
+  main "$@"
+  [[ -n "$TTY" && "${BENCH_YES:-0}" != 1 ]] || exit 0
+  a=$(ask "$(printf ' %s[u]%s Ulangi  %s[x]%s Keluar : ' "$C" "$N" "$C" "$N")")
+  [[ "$a" == u || "$a" == U ]] || exit 0
+  set -- "$MODE"
+done
