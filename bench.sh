@@ -6,7 +6,7 @@
 #  Speedtest CLI resmi Ookla (versi dikunci + cek SHA-256).
 #  Berdiri sendiri: bisa dipakai di VPS mana pun (tidak butuh SC).
 #    bash <(curl -sSL .../bench.sh)              -> pilih mode
-#    bash <(curl -sSL .../bench.sh) cepat|id|sg|lengkap|disk|<id server>
+#    bash <(curl -sSL .../bench.sh) cepat|id|sg|lengkap|<id server>
 # =====================================================
 export LC_ALL=C.UTF-8 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 REPO_RAW=https://raw.githubusercontent.com/amiercassanova-21/Bench-Mod/main
@@ -15,7 +15,6 @@ BIN=$WORK/speedtest
 OOKLA_VER=1.2.0
 declare -A OOKLA_SHA=( [x86_64]="5690596c54ff9bed63fa3732f818a05dbc2db19ad36ed68f21ca5f64d5cfeeb7" [aarch64]="3953d231da3783e2bf8904b6dd72767c5c6e533e163d3742fd0437affa431bd3" )
 SRV_LOCAL=$WORK/servers.txt
-HIST=$WORK/history
 mkdir -p "$WORK" 2>/dev/null
 # masukan keyboard: dijalankan lewat "curl | bash" stdin berisi skrip, jadi baca dari /dev/tty
 if [[ -t 0 ]]; then TTY=/dev/stdin; elif (: </dev/tty) 2>/dev/null; then TTY=/dev/tty; else TTY=""; fi
@@ -100,10 +99,14 @@ run_one(){ # $1 = id server (kosong = terdekat)
 
 # ---------- tampilan ----------
 mb(){ (( $1 >= 10000 )) && awk -v v="$1" 'BEGIN{printf "%.1fG", v/1000}' || printf '%s' "$1"; }
-sbar(){ local n i out="" cols=(172 178 184 148 112 76); n=$(( ($1*6+MAXDL-1)/MAXDL )); ((n<1))&&n=1; ((n>6))&&n=6
+# bar mengikuti UP (arah VPS ke pelanggan), skala tetap: 100/250/500/1000/1500/2000 Mbps
+sbar(){ local n=0 t i out="" cols=(172 178 184 148 112 76)
+  for t in 100 250 500 1000 1500 2000; do (( $1 >= t )) && n=$((n+1)); done; ((n<1))&&n=1
   for ((i=0;i<6;i++)); do if ((i<n)); then out+="$(c ${cols[i]})▰"; else out+="$(c 238)▱"; fi; done; printf '%s%s' "$out" "$N"; }
 pcol(){ (( $1 < 30 )) && printf '%s' "$G" || { (( $1 < 80 )) && printf '%s' "$Y" || printf '%s' "$R"; }; }
-row(){ printf ' %s%-10s%s %s %s%5s%s %s%5s%s %s%4sms%s\n' "$W" "$1" "$N" "$(sbar $2)" "$C" "$(mb $2)" "$N" "$M" "$(mb $3)" "$N" "$(pcol $4)" "$4" "$N"; }
+row(){ # $1 kota  $2 down  $3 up  $4 ping  $5 loss%
+  local lo=""; (( ${5:-0} > 0 )) && lo=" ${R}${5}%${N}"
+  printf ' %s%-10s%s %s %s%5s%s %s%5s%s %s%4sms%s%s\n' "$W" "$1" "$N" "$(sbar $3)" "$C" "$(mb $2)" "$N" "$M" "$(mb $3)" "$N" "$(pcol $4)" "$4" "$N" "$lo"; }
 failrow(){ printf ' %s%-10s%s %s! server tidak aktif · dilewati%s\n' "$W" "$1" "$N" "$Y" "$N"; }
 waitrow(){ printf ' %s%-10s · menunggu%s\n' "$D" "$1" "$N"; }
 
@@ -145,6 +148,7 @@ render(){ # $1 = baris progres (kosong = selesai)
   header; vps_box
   printf ' %s%-10s %-6s %5s %5s %6s%s\n' "$D" "SERVER" "" "DOWN" "UP" "PING" "$N"
   printf ' %s%-10s %-6s %5s %5s %6s%s\n' "$D" "" "" "Mbps" "Mbps" "" "$N"
+  printf ' %sUP = arah VPS ke pelanggan · %% = loss%s\n' "$D" "$N"
   for ((i=0;i<${#SEL[@]};i++)); do
     IFS='|' read -r op city _ _ <<<"${SEL[i]}"
     if [[ "$op" != "$prev" ]]; then
@@ -154,44 +158,55 @@ render(){ # $1 = baris progres (kosong = selesai)
     fi
     if [[ -z "${RES[i]}" ]]; then waitrow "$city"
     elif [[ "${RES[i]}" == FAIL ]]; then failrow "$city"
-    else read -r dl ul pg _ <<<"${RES[i]}"; row "$city" "$dl" "$ul" "$pg"; fi
+    else read -r dl ul pg _ ls _ <<<"${RES[i]}"; row "$city" "$dl" "$ul" "$pg" "$ls"; fi
   done
   [[ -n "$1" ]] && printf '\n %s%s%s\n' "$Y" "$1" "$N"
 }
 
+mbg(){ (( $1 >= 1000 )) && awk -v v="$1" 'BEGIN{printf "%.2f Gbps", v/1000}' || printf '%s Mbps' "$1"; }
 summary(){
-  local i best="" bestv=0 sum=0 n=0 fails=() op city dl ul pg jt ls game=1 stream=1 call=1
+  local i op city cc dl ul pg n=0 maxdl=0 near=0 sum=0 pn=0 fails=() lines=() weak=() tg=()
+  local -A bu bp bc su sn
   for ((i=0;i<${#SEL[@]};i++)); do
     IFS='|' read -r op city cc _ <<<"${SEL[i]}"
-    op=$(opname "$op"); local who="${op:+$op }$city"
-    if [[ "${RES[i]}" == FAIL || -z "${RES[i]}" ]]; then fails+=("$who"); continue; fi
-    read -r dl ul pg jt ls _ <<<"${RES[i]}"
-    (( dl > bestv )) && { bestv=$dl; best="$who"; }
-    if [[ "$cc" == ID ]]; then sum=$((sum+pg)); n=$((n+1)); (( dl < 50 )) && stream=0; fi
-    (( ls > 1 )) && { game=0; call=0; }; (( jt > 30 )) && call=0
+    if [[ "${RES[i]}" == FAIL || -z "${RES[i]}" ]]; then local o; o=$(opname "$op"); fails+=("${o:+$o }$city"); continue; fi
+    read -r dl ul pg _ <<<"${RES[i]}"
+    n=$((n+1)); (( dl > maxdl )) && maxdl=$dl
+    [[ "$cc" == ID && "$op" != NEAR ]] && { sum=$((sum+pg)); pn=$((pn+1)); }
+    [[ "$op" == NEAR ]] && continue
+    su[$op]=$(( ${su[$op]:-0} + ul )); sn[$op]=$(( ${sn[$op]:-0} + 1 ))
+    # terbaik per operator: UP terbesar (selisih <10% dianggap sama), lalu ping terendah
+    if [[ -z "${bc[$op]}" ]] || (( ul*10 > ${bu[$op]}*11 )) || (( ul*11 >= ${bu[$op]}*10 && pg < ${bp[$op]} )); then
+      bu[$op]=$ul; bp[$op]=$pg; bc[$op]=$city
+    fi
   done
-  local avg="-"; (( n > 0 )) && { avg=$((sum/n)); (( avg >= 60 )) && game=0; }
+  # batas VPS: hampir semua download mentok di angka yang sama
+  for ((i=0;i<${#SEL[@]};i++)); do read -r dl _ <<<"${RES[i]}"; [[ "$dl" =~ ^[0-9]+$ ]] && (( dl*10 >= maxdl*9 )) && near=$((near+1)); done
   echo; top
   bl "${B}${W}RINGKASAN${N}"
-  [[ -n "$best" ]] && bl "★ Tercepat : ${G}${best}${N} · $(mb $bestv) Mbps"
-  [[ "$avg" != - ]] && bl "◉ Ping ID  : $(pcol $avg)${avg} ms${N} rata-rata"
-  local fit=(); (( game )) && fit+=("Game"); (( stream )) && fit+=("Stream"); (( call )) && fit+=("Call")
-  (( ${#fit[@]} )) && bl "✓ Cocok    : ${G}$(IFS='·'; echo "${fit[*]}" | sed 's/·/ · /g')${N}"
-  (( ${#fails[@]} )) && bl "! Gagal    : ${Y}${#fails[@]} server${N} ($(IFS=,; echo "${fails[*]}" | sed 's/,/, /g' | cut -c1-24))"
+  if (( n >= 3 && near*10 >= n*7 )); then bl "▲ Batas VPS : ${C}±$(mbg $maxdl)${N} ${D}(semua mentok)${N}"; tg+=("Batas VPS ±$(mbg $maxdl)"); fi
+  (( pn )) && { bl "◉ Ping ID   : $(pcol $((sum/pn)))$((sum/pn)) ms${N} rata-rata"; tg+=("Ping ID $((sum/pn)) ms"); }
+  local maxa=0 a
+  for op in TELKOMSEL INDOSAT XL; do [[ -n "${bc[$op]}" ]] || continue; a=$(( su[$op]/sn[$op] )); (( a > maxa )) && maxa=$a; done
+  for op in TELKOMSEL INDOSAT XL; do
+    [[ -n "${bc[$op]}" ]] || continue
+    lines+=("$(printf '  %s%-8s%s %-9s %s↑%5s%s · %s%2s ms%s' "$(c $(opcol $op))" "$(opname $op)" "$N" "${bc[$op]}" "$M" "$(mb ${bu[$op]})" "$N" "$(pcol ${bp[$op]})" "${bp[$op]}" "$N")")
+    tg+=("$(opname $op) ${bc[$op]} ↑$(mb ${bu[$op]}) ${bp[$op]}ms")
+    a=$(( su[$op]/sn[$op] )); (( a*10 < maxa*6 )) && weak+=("$(opname $op) ke pelanggan ±$(( (a+5)/10*10 )) Mbps")
+  done
+  if (( ${#lines[@]} )); then
+    bl "★ Terbaik per operator ${D}(arah ke pelanggan)${N}"
+    for i in "${lines[@]}"; do bl "$i"; done
+  fi
+  # mode satu server (tanpa operator): tampilkan hasilnya saja
+  if (( ! ${#lines[@]} && n )); then
+    for ((i=0;i<${#SEL[@]};i++)); do [[ "${RES[i]}" == FAIL || -z "${RES[i]}" ]] && continue
+      read -r dl ul pg _ <<<"${RES[i]}"; bl "★ Hasil : ${C}↓$(mb $dl)${N} ${M}↑$(mb $ul)${N} · $(pcol $pg)${pg} ms${N}"; tg+=("↓$(mb $dl) ↑$(mb $ul) ${pg}ms"); done
+  fi
+  for i in "${weak[@]}"; do bl "${Y}! ${i}${N}"; tg+=("! $i"); done
+  (( ${#fails[@]} )) && { bl "${Y}! Gagal ${#fails[@]} server${N} ($(IFS=,; echo "${fails[*]}" | sed 's/,/, /g' | cut -c1-24))"; tg+=("Gagal: ${#fails[@]} server"); }
   bot
-  SUM_TXT="Tercepat: ${best:--} ($(mb $bestv) Mbps) | Ping ID: ${avg} ms | Gagal: ${#fails[@]}"
-}
-
-disk_test(){
-  local free sp
-  free=$(df -m "$WORK" | awk 'NR==2{print $4}')
-  header; echo
-  echo -e " ${Y}Uji disk menulis 512 MB ke disk dan membuat disk sibuk sesaat.${N}"
-  echo -e " ${Y}Di VPS ramai, koneksi pelanggan bisa tersendat selama uji.${N}"
-  (( free > 1024 )) || { echo -e " ${R}Ruang disk kurang dari 1 GB, uji dibatalkan.${N}"; return; }
-  yn=$(ask "$(echo -e " Lanjutkan? (y/n) : ")"); [[ "$yn" == y || "$yn" == Y ]] || return
-  sp=$( (LANG=C dd if=/dev/zero of="$WORK/disktest" bs=1M count=512 conv=fdatasync 2>&1; rm -f "$WORK/disktest") | awk -F, 'END{gsub(/^ +/,"",$NF); print $NF}')
-  echo; top; bl "${B}${W}UJI DISK${N}"; bl "Tulis 512 MB : ${G}${sp:-gagal}${N}"; bot
+  SUM_TXT=$(printf '%s\n' "${tg[@]}")
 }
 
 choose_mode(){
@@ -199,21 +214,19 @@ choose_mode(){
   echo -e " ${C}1.)${N} Cepat      ${D}terdekat + 3 operator · ±2 mnt${N}"
   echo -e " ${C}2.)${N} Indonesia  ${D}semua kota operator ID${N}"
   echo -e " ${C}3.)${N} Singapura  ${D}server SG tiap operator${N}"
-  echo -e " ${C}4.)${N} Lengkap    ${D}semua server · ±6 mnt${N}"
+  echo -e " ${C}4.)${N} Lengkap    ${D}semua kota · ±5-6 mnt${N}"
   echo -e " ${C}5.)${N} Pilih ID   ${D}satu server Speedtest${N}"
-  echo -e " ${C}6.)${N} Uji disk   ${D}opsional · membuat disk sibuk${N}"
   echo -e " ${C}x.)${N} Keluar\n"
   [[ -z "$TTY" ]] && { MODE=cepat; return; }     # tanpa keyboard -> mode cepat
   o=$(ask "$(echo -e " ${G}Pilih : ${N}")")
   case "$o" in 1) MODE=cepat;; 2) MODE=id;; 3) MODE=sg;; 4) MODE=lengkap;;
-    5) MODE=$(ask " ID server : "); [[ "$MODE" =~ ^[0-9]+$ ]] || exit 0;; 6) MODE=disk;; *) exit 0;; esac
+    5) MODE=$(ask " ID server : "); [[ "$MODE" =~ ^[0-9]+$ ]] || exit 0;; *) exit 0;; esac
 }
 
 # ---------- utama ----------
 main(){
 MODE=${1:-}
 [[ -z "$MODE" ]] && choose_mode
-[[ "$MODE" == disk ]] && { disk_test; exit 0; }
 command -v curl >/dev/null || { echo "curl belum terpasang"; exit 1; }
 ensure_cli || exit 1
 get_ipinfo; VPSCC=$V_CC
@@ -231,14 +244,15 @@ case "$MODE" in
   id)      MODE_LBL=Indonesia; for s in "${ALL[@]}"; do [[ "$s" == *"|ID|"* ]] && SEL+=("$s"); done ;;
   sg)      MODE_LBL=Singapura; for s in "${ALL[@]}"; do [[ "$s" == *"|SG|"* ]] && SEL+=("$s"); done ;;
   lengkap) MODE_LBL=Lengkap
-           # urutan per operator: region VPS lebih dulu
+           # urutan per operator: region VPS lebih dulu.
+           # VPS di Indonesia: kota ID saja (rute ke SG tidak dipakai pelanggannya; tetap ada di mode sg)
            for op in TELKOMSEL INDOSAT XL; do
              for pass in first second; do for s in "${ALL[@]}"; do IFS='|' read -r o _ cc _ <<<"$s"; [[ $o != "$op" ]] && continue
-               if [[ $pass == first ]]; then [[ $cc == "$VPSCC" ]] && SEL+=("$s"); else [[ $cc != "$VPSCC" ]] && SEL+=("$s"); fi
+               if [[ $pass == first ]]; then [[ $cc == "$VPSCC" ]] && SEL+=("$s"); elif [[ $VPSCC != ID ]]; then [[ $cc != "$VPSCC" ]] && SEL+=("$s"); fi
              done; done
            done ;;
   [0-9]*)  MODE_LBL="Server $MODE"; SEL+=("NEAR|ID $MODE|ID|$MODE") ;;
-  *) echo "Pakai: bench.sh [cepat|id|sg|lengkap|disk|<id server>]"; exit 1 ;;
+  *) echo "Pakai: bench.sh [cepat|id|sg|lengkap|<id server>]"; exit 1 ;;
 esac
 (( ${#SEL[@]} )) || { echo "Tidak ada server untuk mode ini."; exit 1; }
 
@@ -249,22 +263,20 @@ if [[ -n "$TTY" && "${BENCH_YES:-0}" != 1 ]]; then
   go=$(ask "$(echo -e " ${G}Enter = mulai · x = batal : ${N}")"); [[ "$go" == x || "$go" == X ]] && exit 0
 fi
 
-declare -a RES=(); MAXDL=1; START=$(date +%s)
+declare -a RES=(); START=$(date +%s)
 SPIN=(◐ ◓ ◑ ◒)
 for ((i=0;i<${#SEL[@]};i++)); do
   IFS='|' read -r op city cc id <<<"${SEL[i]}"
   _o=$(opname "$op"); render "${SPIN[i%4]} [$((i+1))/${#SEL[@]}] ${_o:+$_o }${city} · mengukur..."
   if out=$(run_one "$id"); then
     read -r dl ul pg jt ls url _ <<<"$out"
-    RES[i]="$dl $ul $pg $jt $ls $url"; (( dl > MAXDL )) && MAXDL=$dl
+    RES[i]="$dl $ul $pg $jt $ls $url"
   else RES[i]=FAIL; fi
 done
 render ""
 summary
 EL=$(( $(date +%s) - START ))
-printf ' %s◷ %dm %02dd · %s%s\n' "$D" $((EL/60)) $((EL%60)) "$(tgl)" "$N"
-# riwayat 10 tes terakhir
-{ tail -n 9 "$HIST" 2>/dev/null; echo "$(date '+%F %H:%M')|$MODE_LBL|$SUM_TXT"; } > "$HIST.t" 2>/dev/null && mv -f "$HIST.t" "$HIST"
+printf ' %s◷ %dm %02ds · %s%s\n' "$D" $((EL/60)) $((EL%60)) "$(tgl)" "$N"
 echo
 }
 while :; do
