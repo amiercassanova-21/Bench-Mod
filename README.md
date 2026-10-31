@@ -46,7 +46,7 @@ Ganti `lengkap` dengan salah satu mode di bawah.
 
 Hanya operator kartu seluler. Smartfren sudah bergabung ke XL, dan layanan WiFi rumahan tidak dimasukkan.
 
-Daftar server ada di [`speedtest-servers.txt`](speedtest-servers.txt) dan diambil ulang setiap tes. Kalau ada server yang mati, cukup ganti ID-nya di file itu, tanpa mengubah `bench.sh`. Server yang tidak menjawab ditandai `! server tidak aktif · dilewati`.
+Daftar server ada di [`speedtest-servers.txt`](speedtest-servers.txt) dan diambil ulang setiap tes. Kalau ada server yang mati, cukup ganti ID-nya di file itu, tanpa mengubah `bench.sh`. File yang sama juga dipakai speedtest di SC Cassanova Tunneling, jadi cukup diubah di sini. Server yang tidak menjawab ditandai `! server tidak aktif · dilewati`.
 
 Format tiap baris: `OPERATOR|Kota|ID atau SG|ID server Ookla`
 
@@ -72,7 +72,7 @@ Angka ini kecepatan **VPS ke jaringan operator**. Kecepatan di HP pelanggan teta
 
 ## Catatan
 - Memakai **Speedtest CLI resmi Ookla 1.2.0**. File diunduh sekali ke `~/.bench-mod/` dan dicek SHA-256 sebelum dipakai.
-- Mendukung `x86_64` dan `aarch64` (ARM). Diuji di Ubuntu dan Debian.
+- Mendukung `x86_64` dan `aarch64` (ARM). Untuk Ubuntu, Debian, dan CentOS/Rocky (butuh GNU grep). Alpine belum didukung.
 - Selama tes, bandwidth VPS terpakai penuh. Pengguna lain di VPS itu bisa melambat sebentar.
 - Info lokasi VPS diambil dari ipwho.is (cadangan: ip-api.com).
 
