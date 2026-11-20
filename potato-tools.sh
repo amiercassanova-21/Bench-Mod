@@ -31,6 +31,7 @@ R, G, Y, C, W, D, N = '\033[31m', '\033[32m', '\033[33m', '\033[36m', '\033[1;97
 LN = '─' * 42
 TABEL = [('VLESS', 'account_vlesses', 'uuid'), ('VMESS', 'account_vmesses', 'uuid'),
          ('TROJAN', 'account_trojans', 'uuid'), ('SSH', 'account_sshs', 'password')]
+TBL = {nama: t for nama, t, _ in TABEL}
 
 q = ' '.join(sys.argv[1:]).strip()
 if not q:
@@ -62,6 +63,15 @@ def status(r):
     if (r['date_exp'] or '') < today.isoformat(): return f"{R}✖ EXPIRED{N}"
     return f"{G}✔ AKTIF{N}"
 
+# Nomor akun di daftar menu Potato. Potato mengurutkan List User & Recovery menurut
+# nama A-Z (dicocokkan owner dengan menu asli), dihitung terpisah per status & protokol.
+def nomor(nama, r):
+    st = r['status']
+    if st not in ('AKTIF', 'RECOVERY'): return ''
+    n = con.execute(f"select count(*) from {TBL[nama]} where status=? and lower(username) < lower(?)",
+                    (st, r['username'])).fetchone()[0] + 1
+    return f"{n} di {'Recovery' if st == 'RECOVERY' else 'List User'} {nama}"
+
 def cari(exact):
     hasil = []
     for nama, t, kunci in TABEL:
@@ -92,6 +102,8 @@ for nama, r in hasil:
     print(f"   {'Username':<11} : {r['username']}")
     print(f"   {'Expired':<11} : {Y}{r['date_exp']}{N}  ({sisa(r['date_exp'])})")
     print(f"   {'Status':<11} : {status(r)}")
+    pos = nomor(nama, r)
+    if pos: print(f"   {'Nomor':<11} : {C}{pos}{N}")
     lim = r['limit_ip'] or 0
     print(f"   {'Limit IP':<11} : {'Unlimited' if lim == 0 else lim}")
     if nama != 'SSH' or (r['max_bw'] or 0) > 0:
